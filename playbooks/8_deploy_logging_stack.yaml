@@ -1,0 +1,47 @@
+---
+# Playbook to deploy OpenShift Logging Stack with Loki
+- name: Deploy OpenShift Logging Stack
+  hosts: bastion
+  become: false
+  gather_facts: true
+  vars_prompt:
+    - name: minio_ip
+      prompt: "Enter MinIO Server IP"
+      private: false
+    
+    - name: minio_access_key
+      prompt: "Enter MinIO Access Key"
+      private: false
+    
+    - name: minio_secret_key
+      prompt: "Enter MinIO Secret Key"
+      private: true
+    
+    - name: minio_bucket
+      prompt: "Enter MinIO Bucket Name"
+      default: "test"
+      private: false
+    
+    - name: nfs_storage_class
+      prompt: "Enter NFS Storage Class Name"
+      default: "nfs"
+      private: false
+    
+    - name: loki_size
+      prompt: "Enter LokiStack Size (1x.extra-small/1x.small/1x.medium)"
+      default: "1x.extra-small"
+      private: false
+
+  tasks:
+    - name: Include deploy_logging_stack role
+      include_role:
+        name: deploy_logging_stack
+      vars:
+        minio_ip: "{{ minio_ip }}"
+        minio_access_key: "{{ minio_access_key }}"
+        minio_secret_key: "{{ minio_secret_key }}"
+        minio_bucket: "{{ minio_bucket }}"
+        nfs_storage_class: "{{ nfs_storage_class }}"
+        loki_size: "{{ loki_size }}"
+
+# Made with Bob

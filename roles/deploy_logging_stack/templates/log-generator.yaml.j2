@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: log-generator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: log-generator
+  namespace: log-generator
+  labels:
+    app: log-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: log-generator
+  template:
+    metadata:
+      labels:
+        app: log-generator
+    spec:
+      containers:
+      - name: log-generator
+        image: busybox:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Starting log generator..."
+          counter=0
+          while true; do
+            counter=$((counter + 1))
+            timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+            
+            # Generate different types of logs
+            case $((counter % 5)) in
+              0)
+                echo "[$timestamp] INFO: Application started successfully - Request #$counter"
+                ;;
+              1)
+                echo "[$timestamp] DEBUG: Processing user request - Session ID: $(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1)"
+                ;;
+              2)
+                echo "[$timestamp] WARN: High memory usage detected - Current: $((50 + RANDOM % 50))%"
+                ;;
+              3)
+                echo "[$timestamp] ERROR: Failed to connect to database - Retry attempt #$((RANDOM % 5))"
+                ;;
+              4)
+                echo "[$timestamp] INFO: Request completed successfully - Response time: $((RANDOM % 1000))ms"
+                ;;
+            esac
+            
+            # Random sleep between 1-5 seconds
+            sleep $((1 + RANDOM % 5))
+          done
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: log-generator
+  namespace: log-generator
+  labels:
+    app: log-generator
+spec:
+  selector:
+    app: log-generator
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+  type: ClusterIP

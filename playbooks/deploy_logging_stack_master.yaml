@@ -1,0 +1,8 @@
+---
+# Master playbook for deploying logging stack after SNO cluster is ready
+# This should be run after the SNO cluster deployment is complete
+
+- name: Deploy OpenShift Logging Stack - Master Playbook
+  import_playbook: 8_deploy_logging_stack.yaml
+
+# Made with Bob

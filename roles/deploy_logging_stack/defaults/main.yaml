@@ -1,0 +1,25 @@
+---
+# defaults file for deploy_logging_stack
+
+# Logging namespace
+logging_namespace: openshift-logging
+
+# LokiStack configuration
+lokistack_name: lokistack-sample
+loki_size: 1x.extra-small  # Options: 1x.extra-small, 1x.small, 1x.medium
+
+# Storage configuration
+nfs_storage_class: nfs
+
+# MinIO configuration
+minio_ip: ""
+minio_port: 9000
+minio_region: us-east-1
+minio_bucket: test
+minio_access_key: ""
+minio_secret_key: ""
+
+# ServiceAccount for log collection
+log_collector_sa: logcollector
+
+# Made with Bob

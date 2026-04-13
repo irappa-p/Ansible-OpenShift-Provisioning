@@ -1,0 +1,406 @@
+---
+# tasks file for deploy_logging_stack
+
+- name: Display logging stack deployment information
+  debug:
+    msg:
+      - "===== OpenShift Logging Stack Deployment ====="
+      - "Namespace: {{ logging_namespace }}"
+      - "LokiStack: {{ lokistack_name }}"
+      - "MinIO Endpoint: http://{{ minio_ip }}:{{ minio_port }}"
+      - "Storage Class: {{ nfs_storage_class }}"
+      - "Loki Size: {{ loki_size }}"
+
+- name: Check if oc command is available
+  command: which oc
+  register: oc_check
+  failed_when: false
+  changed_when: false
+
+- name: Fail if oc is not installed
+  fail:
+    msg: "OpenShift CLI (oc) is not installed. Please install it first."
+  when: oc_check.rc != 0
+
+- name: Check if logged into OpenShift cluster
+  command: oc whoami
+  register: oc_login_check
+  failed_when: false
+  changed_when: false
+
+- name: Fail if not logged into OpenShift
+  fail:
+    msg: "Not logged into OpenShift cluster. Please login first using 'oc login'."
+  when: oc_login_check.rc != 0
+
+- name: Create openshift-logging namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ logging_namespace }}"
+
+- name: Create OperatorGroup for logging
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1
+      kind: OperatorGroup
+      metadata:
+        name: logging-operator-group
+        namespace: "{{ logging_namespace }}"
+      spec: {}
+
+- name: Get Loki Operator default channel
+  shell: oc get packagemanifest loki-operator -n openshift-marketplace -o jsonpath='{.status.defaultChannel}'
+  register: loki_channel
+  changed_when: false
+
+- name: Display Loki Operator channel
+  debug:
+    msg: "Using Loki Operator channel: {{ loki_channel.stdout }}"
+
+- name: Install Loki Operator
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: loki-operator
+        namespace: "{{ logging_namespace }}"
+      spec:
+        channel: "{{ loki_channel.stdout }}"
+        name: loki-operator
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+        installPlanApproval: Automatic
+
+- name: Wait for Loki Operator CSV to be Succeeded
+  shell: |
+    oc get csv -n {{ logging_namespace }} | grep loki-operator | grep -q Succeeded
+  register: loki_csv_check
+  until: loki_csv_check.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Display Loki Operator status
+  debug:
+    msg: "Loki Operator is ready!"
+
+- name: Get Cluster Logging Operator default channel
+  shell: oc get packagemanifest cluster-logging -n openshift-marketplace -o jsonpath='{.status.defaultChannel}'
+  register: logging_channel
+  changed_when: false
+
+- name: Display Cluster Logging Operator channel
+  debug:
+    msg: "Using Cluster Logging Operator channel: {{ logging_channel.stdout }}"
+
+- name: Install Cluster Logging Operator
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: cluster-logging
+        namespace: "{{ logging_namespace }}"
+      spec:
+        channel: "{{ logging_channel.stdout }}"
+        name: cluster-logging
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+        installPlanApproval: Automatic
+
+- name: Wait for Cluster Logging Operator CSV to be Succeeded
+  shell: |
+    oc get csv -n {{ logging_namespace }} | grep cluster-logging | grep -q Succeeded
+  register: logging_csv_check
+  until: logging_csv_check.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Display Cluster Logging Operator status
+  debug:
+    msg: "Cluster Logging Operator is ready!"
+
+- name: Install Local Storage Operator
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: local-storage-operator
+        namespace: openshift-operators
+      spec:
+        channel: stable
+        name: local-storage-operator
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+        installPlanApproval: Automatic
+
+- name: Wait for Local Storage Operator CSV to be Succeeded
+  shell: |
+    oc get csv -n openshift-operators | grep local-storage-operator | grep -q Succeeded
+  register: local_storage_csv_check
+  until: local_storage_csv_check.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Display Local Storage Operator status
+  debug:
+    msg: "Local Storage Operator is ready!"
+
+- name: Create S3 secret for MinIO
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: credsecret
+        namespace: "{{ logging_namespace }}"
+      type: Opaque
+      stringData:
+        endpoint: "http://{{ minio_ip }}:{{ minio_port }}"
+        region: "{{ minio_region }}"
+        bucketnames: "{{ minio_bucket }}"
+        access_key_id: "{{ minio_access_key }}"
+        access_key_secret: "{{ minio_secret_key }}"
+
+- name: Deploy LokiStack
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: loki.grafana.com/v1
+      kind: LokiStack
+      metadata:
+        name: "{{ lokistack_name }}"
+        namespace: "{{ logging_namespace }}"
+      spec:
+        managementState: Managed
+        size: "{{ loki_size }}"
+        storageClassName: "{{ nfs_storage_class }}"
+        storage:
+          schemas:
+            - version: v12
+              effectiveDate: "2022-06-01"
+          secret:
+            name: credsecret
+            type: s3
+        tenants:
+          mode: openshift-logging
+
+- name: Wait for LokiStack pods to be running
+  shell: |
+    oc get pods -n {{ logging_namespace }} | grep lokistack | grep -q Running
+  register: lokistack_pods_check
+  until: lokistack_pods_check.rc == 0
+  retries: 60
+  delay: 10
+  changed_when: false
+  ignore_errors: true
+
+- name: Display LokiStack status
+  shell: oc get lokistack -n {{ logging_namespace }}
+  register: lokistack_status
+  changed_when: false
+
+- name: Show LokiStack status
+  debug:
+    var: lokistack_status.stdout_lines
+
+- name: Create ServiceAccount for log collector
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ log_collector_sa }}"
+        namespace: "{{ logging_namespace }}"
+
+- name: Grant collect-application-logs role
+  shell: oc adm policy add-cluster-role-to-user collect-application-logs -z {{ log_collector_sa }} -n {{ logging_namespace }}
+  changed_when: false
+
+- name: Grant collect-infrastructure-logs role
+  shell: oc adm policy add-cluster-role-to-user collect-infrastructure-logs -z {{ log_collector_sa }} -n {{ logging_namespace }}
+  changed_when: false
+
+- name: Grant collect-audit-logs role
+  shell: oc adm policy add-cluster-role-to-user collect-audit-logs -z {{ log_collector_sa }} -n {{ logging_namespace }}
+  changed_when: false
+
+- name: Grant logging-collector-logs-writer role
+  shell: oc adm policy add-cluster-role-to-user logging-collector-logs-writer -z {{ log_collector_sa }} -n {{ logging_namespace }}
+  changed_when: false
+
+- name: Create ClusterLogForwarder
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: observability.openshift.io/v1
+      kind: ClusterLogForwarder
+      metadata:
+        name: collector
+        namespace: "{{ logging_namespace }}"
+      spec:
+        collector:
+          resources: {}
+        outputs:
+          - name: lokistack
+            type: lokiStack
+            lokiStack:
+              authentication:
+                token:
+                  from: serviceAccount
+              target:
+                name: "{{ lokistack_name }}"
+                namespace: "{{ logging_namespace }}"
+            tls:
+              ca:
+                configMapName: openshift-service-ca.crt
+                key: service-ca.crt
+        pipelines:
+          - name: default-lokistack
+            inputRefs:
+              - application
+              - infrastructure
+              - audit
+            outputRefs:
+              - lokistack
+        serviceAccount:
+          name: "{{ log_collector_sa }}"
+
+- name: Get Cluster Observability Operator default channel
+  shell: oc get packagemanifest cluster-observability-operator -n openshift-marketplace -o jsonpath='{.status.defaultChannel}'
+  register: coo_channel
+  changed_when: false
+  failed_when: false
+
+- name: Set default COO channel if not found
+  set_fact:
+    coo_channel_value: "{{ coo_channel.stdout if coo_channel.rc == 0 else 'development' }}"
+
+- name: Display Cluster Observability Operator channel
+  debug:
+    msg: "Using Cluster Observability Operator channel: {{ coo_channel_value }}"
+
+- name: Install Cluster Observability Operator
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: cluster-observability-operator
+        namespace: openshift-operators
+      spec:
+        channel: "{{ coo_channel_value }}"
+        name: cluster-observability-operator
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+        installPlanApproval: Automatic
+
+- name: Wait for Cluster Observability Operator CSV to be Succeeded
+  shell: |
+    oc get csv -n openshift-operators | grep cluster-observability-operator | grep -q Succeeded
+  register: coo_csv_check
+  until: coo_csv_check.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Display Cluster Observability Operator status
+  debug:
+    msg: "Cluster Observability Operator is ready!"
+
+- name: Wait for COO to be fully ready
+  pause:
+    seconds: 30
+
+- name: Enable Logging UI Plugin
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: observability.openshift.io/v1alpha1
+      kind: UIPlugin
+      metadata:
+        name: logging
+      spec:
+        type: Logging
+        logging:
+          logsLimit: 10
+          lokiStack:
+            name: "{{ lokistack_name }}"
+            timeout: 5m
+
+- name: Get all CSVs in openshift-logging
+  shell: oc get csv -n {{ logging_namespace }}
+  register: logging_csvs
+  changed_when: false
+
+- name: Display logging CSVs
+  debug:
+    var: logging_csvs.stdout_lines
+
+- name: Get all pods in openshift-logging
+  shell: oc get pods -n {{ logging_namespace }}
+  register: logging_pods
+  changed_when: false
+
+- name: Display logging pods
+  debug:
+    var: logging_pods.stdout_lines
+
+- name: Get ClusterLogForwarder status
+  shell: oc get clusterlogforwarder -n {{ logging_namespace }}
+  register: clf_status
+  changed_when: false
+
+- name: Display ClusterLogForwarder status
+  debug:
+    var: clf_status.stdout_lines
+
+- name: Get UIPlugin status
+  shell: oc get uiplugin
+  register: uiplugin_status
+  changed_when: false
+  failed_when: false
+
+- name: Display UIPlugin status
+  debug:
+    var: uiplugin_status.stdout_lines
+
+- name: Display deployment summary
+  debug:
+    msg:
+      - "=========================================="
+      - "Logging Stack Deployment Complete!"
+      - "=========================================="
+      - ""
+      - "Summary:"
+      - "  - Namespace: {{ logging_namespace }}"
+      - "  - LokiStack: {{ lokistack_name }}"
+      - "  - Storage: {{ nfs_storage_class }}"
+      - "  - MinIO Endpoint: http://{{ minio_ip }}:{{ minio_port }}"
+      - "  - Bucket: {{ minio_bucket }}"
+      - ""
+      - "Next Steps:"
+      - "  1. Verify all pods are running: oc get pods -n {{ logging_namespace }}"
+      - "  2. Check LokiStack status: oc get lokistack -n {{ logging_namespace }}"
+      - "  3. Access OpenShift Console to view logs in Observe > Logs"
+      - ""
+      - "To view logs in the console:"
+      - "  - Navigate to: Observe > Logs"
+      - "  - Select namespace and pod to view logs"
+
+# Made with Bob
