@@ -1,23 +1,16 @@
 ---
 # Playbook to deploy OpenShift Logging Stack with Loki
-# This playbook should be run after SNO cluster deployment is complete
-- name: Setup Inventory
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  vars_files:
-    - "{{ inventory_dir }}/group_vars/all.yaml"
-  roles:
-    - set_inventory
+# This playbook runs on localhost and uses oc commands to deploy to the cluster
+# Prerequisites:
+#   - SNO cluster must be deployed and accessible
+#   - oc CLI must be installed and configured (KUBECONFIG set)
+#   - User must be logged into the cluster (oc login)
 
 - name: Deploy OpenShift Logging Stack
-  hosts: bastion
+  hosts: localhost
+  connection: local
   become: false
   gather_facts: true
-  vars_files:
-    - "{{ inventory_dir }}/group_vars/all.yaml"
-  environment:
-    KUBECONFIG: "{{ '/home/' if (env.bastion.access.user != 'root') else '/'}}{{ env.bastion.access.user }}/.kube/config"
   vars_prompt:
     - name: setup_nfs
       prompt: "Do you want to setup NFS provisioner? (yes/no)"
