@@ -1,0 +1,371 @@
+---
+# tasks file for setup_nfs_provisioner
+
+- name: Display NFS provisioner setup information
+  debug:
+    msg:
+      - "===== Setting up NFS Provisioner ====="
+      - "This will deploy an in-cluster NFS provisioner"
+      - "Storage location: /srv/nfs on worker node"
+      - "Storage class name: {{ nfs_storage_class_name }}"
+
+- name: Create nfs-provisioner namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: nfs-provisioner
+
+- name: Get first worker node name
+  shell: oc get nodes --no-headers | grep -m1 worker | awk '{print $1}' || oc get nodes --no-headers | head -1 | awk '{print $1}'
+  register: worker_node
+  changed_when: false
+
+- name: Display worker node
+  debug:
+    msg: "NFS provisioner will be deployed on node: {{ worker_node.stdout }}"
+
+- name: Annotate nfs-provisioner namespace with node selector
+  shell: |
+    oc annotate ns nfs-provisioner \
+      scheduler.alpha.kubernetes.io/node-selector=kubernetes.io/hostname={{ worker_node.stdout }} \
+      --overwrite
+  changed_when: false
+
+- name: Create ServiceAccount for NFS provisioner
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: nfs-provisioner
+        namespace: nfs-provisioner
+
+- name: Create NFS provisioner Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      kind: Service
+      apiVersion: v1
+      metadata:
+        name: nfs-provisioner
+        namespace: nfs-provisioner
+        labels:
+          app: nfs-provisioner
+      spec:
+        ports:
+          - name: nfs
+            port: 2049
+          - name: nfs-udp
+            port: 2049
+            protocol: UDP
+          - name: nlockmgr
+            port: 32803
+          - name: nlockmgr-udp
+            port: 32803
+            protocol: UDP
+          - name: mountd
+            port: 20048
+          - name: mountd-udp
+            port: 20048
+            protocol: UDP
+          - name: rquotad
+            port: 875
+          - name: rquotad-udp
+            port: 875
+            protocol: UDP
+          - name: rpcbind
+            port: 111
+          - name: rpcbind-udp
+            port: 111
+            protocol: UDP
+          - name: statd
+            port: 662
+          - name: statd-udp
+            port: 662
+            protocol: UDP
+        selector:
+          app: nfs-provisioner
+
+- name: Create NFS provisioner Deployment
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      kind: Deployment
+      apiVersion: apps/v1
+      metadata:
+        name: nfs-provisioner
+        namespace: nfs-provisioner
+      spec:
+        selector:
+          matchLabels:
+            app: nfs-provisioner
+        replicas: 1
+        strategy:
+          type: Recreate
+        template:
+          metadata:
+            labels:
+              app: nfs-provisioner
+          spec:
+            serviceAccount: nfs-provisioner
+            initContainers:
+            - name: init
+              image: quay.io/openshifttest/nfs-provisioner@sha256:99bc22802c01fb341c623d8dc2af79fea90c0a0bc6db4b6383df0bd668f2c017
+              command:
+              - sh
+              - "-c"
+              - mkdir -p /srv/nfs;chcon -Rt svirt_sandbox_file_t /srv/nfs;chmod 777 /srv/nfs
+              volumeMounts:
+              - mountPath: "/srv"
+                name: local
+              securityContext:
+                privileged: true
+            containers:
+              - name: nfs-provisioner
+                image: quay.io/openshifttest/nfs-provisioner@sha256:99bc22802c01fb341c623d8dc2af79fea90c0a0bc6db4b6383df0bd668f2c017
+                ports:
+                  - name: nfs
+                    containerPort: 2049
+                  - name: nfs-udp
+                    containerPort: 2049
+                    protocol: UDP
+                  - name: nlockmgr
+                    containerPort: 32803
+                  - name: nlockmgr-udp
+                    containerPort: 32803
+                    protocol: UDP
+                  - name: mountd
+                    containerPort: 20048
+                  - name: mountd-udp
+                    containerPort: 20048
+                    protocol: UDP
+                  - name: rquotad
+                    containerPort: 875
+                  - name: rquotad-udp
+                    containerPort: 875
+                    protocol: UDP
+                  - name: rpcbind
+                    containerPort: 111
+                  - name: rpcbind-udp
+                    containerPort: 111
+                    protocol: UDP
+                  - name: statd
+                    containerPort: 662
+                  - name: statd-udp
+                    containerPort: 662
+                    protocol: UDP
+                securityContext:
+                  capabilities:
+                    add:
+                      - DAC_READ_SEARCH
+                      - SYS_RESOURCE
+                args:
+                  - "-provisioner={{ nfs_provisioner_name }}"
+                env:
+                  - name: POD_IP
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: status.podIP
+                  - name: SERVICE_NAME
+                    value: nfs-provisioner
+                  - name: POD_NAMESPACE
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.namespace
+                imagePullPolicy: "IfNotPresent"
+                volumeMounts:
+                  - name: export-volume
+                    mountPath: /export
+            volumes:
+              - name: export-volume
+                hostPath:
+                  path: /srv/nfs
+              - name: local
+                hostPath:
+                  path: "/srv"
+
+- name: Create SecurityContextConstraints for NFS provisioner
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      allowHostDirVolumePlugin: true
+      allowHostIPC: false
+      allowHostNetwork: false
+      allowHostPID: false
+      allowHostPorts: false
+      allowPrivilegedContainer: false
+      allowedCapabilities:
+      - DAC_READ_SEARCH
+      - SYS_RESOURCE
+      apiVersion: security.openshift.io/v1
+      defaultAddCapabilities: null
+      fsGroup:
+        type: MustRunAs
+      kind: SecurityContextConstraints
+      metadata:
+        name: nfs-provisioner
+      priority: null
+      readOnlyRootFilesystem: false
+      requiredDropCapabilities:
+      - KILL
+      - MKNOD
+      - SYS_CHROOT
+      runAsUser:
+        type: RunAsAny
+      seLinuxContext:
+        type: MustRunAs
+      supplementalGroups:
+        type: RunAsAny
+      volumes:
+      - configMap
+      - downwardAPI
+      - emptyDir
+      - persistentVolumeClaim
+      - secret
+
+- name: Create ClusterRole for NFS provisioner
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      kind: ClusterRole
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: nfs-provisioner-runner
+      rules:
+        - apiGroups: [""]
+          resources: ["persistentvolumes"]
+          verbs: ["get", "list", "watch", "create", "delete"]
+        - apiGroups: [""]
+          resources: ["persistentvolumeclaims"]
+          verbs: ["get", "list", "watch", "update"]
+        - apiGroups: ["storage.k8s.io"]
+          resources: ["storageclasses"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: [""]
+          resources: ["events"]
+          verbs: ["create", "update", "patch"]
+        - apiGroups: [""]
+          resources: ["services", "endpoints"]
+          verbs: ["get"]
+        - apiGroups: ["extensions"]
+          resources: ["podsecuritypolicies"]
+          resourceNames: ["nfs-provisioner"]
+          verbs: ["use"]
+
+- name: Create ClusterRoleBinding for NFS provisioner
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      kind: ClusterRoleBinding
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: run-nfs-provisioner
+      subjects:
+        - kind: ServiceAccount
+          name: nfs-provisioner
+          namespace: nfs-provisioner
+      roleRef:
+        kind: ClusterRole
+        name: nfs-provisioner-runner
+        apiGroup: rbac.authorization.k8s.io
+
+- name: Create Role for leader locking
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      kind: Role
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: leader-locking-nfs-provisioner
+        namespace: nfs-provisioner
+      rules:
+        - apiGroups: [""]
+          resources: ["endpoints"]
+          verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+- name: Create RoleBinding for leader locking
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      kind: RoleBinding
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: leader-locking-nfs-provisioner
+        namespace: nfs-provisioner
+      subjects:
+        - kind: ServiceAccount
+          name: nfs-provisioner
+          namespace: nfs-provisioner
+      roleRef:
+        kind: Role
+        name: leader-locking-nfs-provisioner
+        apiGroup: rbac.authorization.k8s.io
+
+- name: Add SCC to NFS provisioner service account
+  shell: oc adm policy add-scc-to-user nfs-provisioner system:serviceaccount:nfs-provisioner:nfs-provisioner
+  changed_when: false
+
+- name: Add privileged SCC to NFS provisioner service account
+  shell: oc adm policy add-scc-to-user privileged system:serviceaccount:nfs-provisioner:nfs-provisioner
+  changed_when: false
+
+- name: Wait for NFS provisioner pod to be running
+  shell: oc -n nfs-provisioner get pod --show-labels --no-headers -l app=nfs-provisioner | grep -w "Running"
+  register: nfs_pod_check
+  until: nfs_pod_check.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Display NFS provisioner pod status
+  debug:
+    var: nfs_pod_check.stdout_lines
+
+- name: Create StorageClass
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: "{{ nfs_storage_class_name }}"
+        annotations:
+          storageclass.beta.kubernetes.io/is-default-class: "{{ set_as_default | string | lower }}"
+      provisioner: "{{ nfs_provisioner_name }}"
+      mountOptions:
+        - vers=4.1
+      reclaimPolicy: Delete
+      volumeBindingMode: Immediate
+
+- name: Verify StorageClass creation
+  shell: oc get storageclass {{ nfs_storage_class_name }}
+  register: sc_check
+  changed_when: false
+
+- name: Display StorageClass
+  debug:
+    var: sc_check.stdout_lines
+
+- name: Display NFS provisioner setup summary
+  debug:
+    msg:
+      - "=========================================="
+      - "NFS Provisioner Setup Complete!"
+      - "=========================================="
+      - ""
+      - "Summary:"
+      - "  - Namespace: nfs-provisioner"
+      - "  - Storage Class: {{ nfs_storage_class_name }}"
+      - "  - Provisioner: {{ nfs_provisioner_name }}"
+      - "  - Storage Location: /srv/nfs on {{ worker_node.stdout }}"
+      - "  - Default Storage Class: {{ set_as_default }}"
+      - ""
+      - "Verification:"
+      - "  - Check pods: oc get pods -n nfs-provisioner"
+      - "  - Check storage class: oc get storageclass {{ nfs_storage_class_name }}"
+
+# Made with Bob

@@ -5,6 +5,11 @@
   become: false
   gather_facts: true
   vars_prompt:
+    - name: setup_nfs
+      prompt: "Do you want to setup NFS provisioner? (yes/no)"
+      default: "yes"
+      private: false
+    
     - name: minio_ip
       prompt: "Enter MinIO Server IP"
       private: false
@@ -33,6 +38,11 @@
       private: false
 
   tasks:
+    - name: Setup NFS provisioner
+      include_role:
+        name: setup_nfs_provisioner
+      when: setup_nfs | lower == 'yes' or setup_nfs | lower == 'y'
+
     - name: Include deploy_logging_stack role
       include_role:
         name: deploy_logging_stack

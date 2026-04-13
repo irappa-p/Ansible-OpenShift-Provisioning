@@ -1,0 +1,9 @@
+---
+# defaults file for setup_nfs_provisioner
+
+# NFS provisioner configuration
+nfs_provisioner_name: example.com/nfs
+nfs_storage_class_name: nfs
+set_as_default: true
+
+# Made with Bob
